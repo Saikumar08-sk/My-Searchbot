@@ -1,0 +1,7 @@
+google-search-results
+openai
+streamlit
+serpapi
+gTTS
+bs4
+loguru
