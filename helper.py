@@ -1,114 +1,115 @@
-import json
 import os
-from datetime import datetime
-from typing import Dict, List
+import json
+import asyncio
 import requests
+import urllib
+import re
+from datetime import datetime
+from typing import Dict, List, Any, Optional
 from bs4 import BeautifulSoup
-from urllib.parse import quote_plus
-import random
-from gtts import gTTS
-from groq import Groq
-from dotenv import load_dotenv
-import time
+from logger.app_logger import app_logger
 
-load_dotenv()
-
-class WebSearch:
-    def __init__(self):
-        # Rotate between different user agents to avoid detection
-        self.user_agents = [
-            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-            'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:89.0) Gecko/20100101 Firefox/89.0'
-        ]
-
-    def _get_random_headers(self):
-        return {
-            'User-Agent': random.choice(self.user_agents),
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-            'Accept-Language': 'en-US,en;q=0.5',
-            'DNT': '1',
-            'Connection': 'keep-alive',
-            'Upgrade-Insecure-Requests': '1',
-        }
-
-    def search(self, query: str, num_results: int = 10) -> Dict[str, any]:
-        """
-        Scrape DuckDuckGo search results
-        """
-        encoded_query = quote_plus(query)
-        url = f"https://html.duckduckgo.com/html/?q={encoded_query}"
-        
-        try:
-            response = requests.get(url, headers=self._get_random_headers())
-            response.raise_for_status()
-            
-            soup = BeautifulSoup(response.text, 'html.parser')
-            results = []
-            
-            # Find all result containers
-            for result in soup.select('.result')[:num_results]:
-                title_elem = result.select_one('.result__title')
-                link_elem = result.select_one('.result__url')
-                snippet_elem = result.select_one('.result__snippet')
-                
-                if title_elem and link_elem:
-                    results.append({
-                        'title': title_elem.get_text(strip=True),
-                        'link': link_elem.get('href', ''),
-                        'snippet': snippet_elem.get_text(strip=True) if snippet_elem else ''
-                    })
-            
-            return {"data": results}
-            
-        except Exception as e:
-            print(f"An error occurred: {e}")
-            return {"status": "error", "message": str(e)}
-
-def current_year() -> int:
-    now: datetime = datetime.now()
-    return now.year
-
-def save_to_audio(text: str) -> None:
-    tts = gTTS(text=text, lang="en")
-    tts.save("output.mp3")
+# ============================ CHATBOT CLASS ============================
 
 class ChatBot:
     """
-    Chatbot using Llama-3.3 through Groq's API with JSON response format
+    Chatbot class that interacts with a local AI model.
     """
-    def __init__(self):
-        self.client = Groq(
-            api_key=os.environ["GROQ_API_KEY"],
-        )
-        self.history = [{"role": "system", "content": "You are a helpful assistant. IMPORTANT: Always format your responses as valid JSON with a 'response' field containing your message."}]
-        self.search_engine = WebSearch()
-    
-    def search(self, query: str, num_results: int = 10) -> str:
-        """
-        Perform a search using DuckDuckGo and return JSON response
-        """
-        response = self.search_engine.search(query, num_results)
-        return json.dumps(response)
-    
+    def __init__(self) -> None:
+        self.history: List[Dict[str, str]] = [{"role": "system", "content": "You are a helpful assistant."}]
+        app_logger.log_info("ChatBot instance initialized", level="INFO")
+
     def generate_response(self, prompt: str) -> str:
         """
-        Generate a response using Llama-3.3 through Groq with JSON format
+        Generate a response from the chatbot.
         """
-        
         self.history.append({"role": "user", "content": prompt})
+        app_logger.log_info("User prompt added to history", level="INFO")
         
-        completion = self.client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
-            messages=self.history,
-            temperature=0.7,
-            top_p=1,
-            stream=False
-            
-        )
-        
-        response = completion.choices[0].message.content
-        
+        # Simulated AI response (replace with actual model call)
+        response = f"AI Response to: {prompt}"
         self.history.append({"role": "assistant", "content": response})
-        
+        app_logger.log_info("Assistant response generated", level="INFO")
         return response
+
+# ============================ NEWS SEARCH FUNCTION ============================
+
+async def invoke_duckduckgo_news_search(query: str, num: int = 5, location: str = "us-en", time_filter: str = "w") -> Dict[str, Any]:
+    """
+    Perform a DuckDuckGo News search.
+    """
+    app_logger.log_info(f"Starting news search for: {query}", level="INFO")
+    search_url = f"https://duckduckgo.com/html/?q={query.replace(' ', '+')}&kl={location}&df={time_filter}&ia=news"
+    headers = {"User-Agent": "Mozilla/5.0"}
+    
+    response = requests.get(search_url, headers=headers)
+    if response.status_code != 200:
+        app_logger.log_error("Failed to fetch news results.")
+        return {"status": "error", "message": "Failed to fetch news results"}
+    
+    soup = BeautifulSoup(response.text, "html.parser")
+    search_results = soup.find_all("div", class_="result__body")
+    
+    async def process_article(result, index: int) -> Optional[Dict[str, Any]]:
+        """Processes a single article."""
+        try:
+            title_tag = result.find("a", class_="result__a")
+            if not title_tag:
+                return None
+            title = title_tag.text.strip()
+            raw_link = title_tag["href"]
+            match = re.search(r"uddg=(https?%3A%2F%2F[^&]+)", raw_link)
+            link = urllib.parse.unquote(match.group(1)) if match else "Unknown Link"
+            snippet = result.find("a", class_="result__snippet")
+            summary = snippet.text.strip() if snippet else "No summary available."
+            return {"num": index + 1, "link": link, "title": title, "summary": summary}
+        except Exception as e:
+            app_logger.log_error(f"Error processing article: {e}")
+            return None
+    
+    tasks = [process_article(result, index) for index, result in enumerate(search_results[:num])]
+    extracted_results = await asyncio.gather(*tasks)
+    extracted_results = [res for res in extracted_results if res is not None]
+    
+    if extracted_results:
+        app_logger.log_info(f"News search completed successfully with {len(extracted_results)} results", level="INFO")
+        return {"status": "success", "results": extracted_results}
+    else:
+        app_logger.log_error("No valid news search results found")
+        return {"status": "error", "message": "No valid news search results found"}
+
+# ============================ UTILITY FUNCTIONS ============================
+
+def current_year() -> int:
+    """Returns the current year as an integer."""
+    return datetime.now().year
+
+def save_json(data: Dict[str, Any], filename: str) -> None:
+    """Save a dictionary to a JSON file."""
+    try:
+        with open(filename, "w") as f:
+            json.dump(data, f, indent=4)
+        app_logger.log_info(f"Data successfully saved to {filename}")
+    except Exception as e:
+        app_logger.log_error(f"Error saving JSON file: {e}")
+
+def load_json(filename: str) -> Optional[Dict[str, Any]]:
+    """Load a dictionary from a JSON file."""
+    try:
+        with open(filename, "r") as f:
+            data = json.load(f)
+        app_logger.log_info(f"Data successfully loaded from {filename}")
+        return data
+    except FileNotFoundError:
+        app_logger.log_warning(f"File {filename} not found.")
+        return None
+    except Exception as e:
+        app_logger.log_error(f"Error loading JSON file: {e}")
+        return None
+
+def log_search_query(query: str) -> None:
+    """Log user search queries for analysis."""
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    log_entry = {"timestamp": timestamp, "query": query}
+    save_json(log_entry, "search_logs.json")
+    app_logger.log_info(f"Search query logged: {query}")
