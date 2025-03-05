@@ -1,0 +1,16 @@
+user_prompt,url_to_check,func_rating,custom_rating
+How does climate change impact global weather?,https://www.nationalgeographic.com/environment/article/climate-change,5,5
+What are the latest advancements in AI?,https://www.technologyreview.com/2023/05/01/latest-ai-advancements/,1,2
+How does diet influence mental health?,https://www.health.harvard.edu/mind-and-mood/foods-linked-to-better-brainpower,5,5
+What are the effects of space travel on astronauts?,https://www.nasa.gov/hrp/long-term-health-risks-of-space-travel,3,4
+Is cryptocurrency a safe investment?,https://www.investopedia.com/terms/c/cryptocurrency.asp,3,4
+What are the advantages of renewable energy?,https://www.energy.gov/eere/renewable-energy,4,5
+How does deep learning work?,https://www.ibm.com/cloud/deep-learning,4,5
+What are the health risks of 5G technology?,https://www.who.int/news-room/questions-and-answers/item/radiation-5g-mobile-networks-and-health,4,5
+Is intermittent fasting effective for weight loss?,https://www.ncbi.nlm.nih.gov/pmc/articles/PMC6167940/,2,3
+How do electric vehicles compare to gas cars?,https://www.tesla.com/blog/benefits-of-electric-vehicles,2,3
+What are the symptoms of the flu?,https://www.cdc.gov/flu/symptoms/symptoms.htm,2,3
+How does quantum computing work?,https://www.ibm.com/quantum-computing/what-is-quantum-computing/,1,2
+What is the impact of social media on mental health?,https://www.apa.org/news/press/releases/stress/2021/impact-social-media,2,3
+Are genetically modified foods safe?,https://www.fda.gov/food/agricultural-biotechnology/gmo-crops-animal-food-and-feed,2,3
+What are the benefits of mindfulness meditation?,https://www.mindful.org/how-to-practice-mindfulness-meditation/,5,5
