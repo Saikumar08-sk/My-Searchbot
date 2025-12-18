@@ -145,27 +145,49 @@ def run_app():
     st.set_page_config(layout="wide")
     st.title("SearchBot 🤖")
     display_searchbot_intro()
-    
+
     user_settings = configure_sidebar()
     initialize_chat()
     show_chat_history()
-    
+
     if user_input := st.chat_input("Ask a question..."):
+        # ---- User message ----
         st.chat_message("user").markdown(user_input)
         st.session_state.messages.append({"role": "user", "content": user_input})
-        
-        search_results = fetch_search_results(user_input, user_settings)
+
+        # ---- OPT 1: Real-time search (cached) ----
+        with st.spinner("Searching the web..."):
+            # If you already added get_search_results_realtime() (TTL cache),
+            # use it directly. Otherwise fallback to your existing function.
+            try:
+                search_results = get_search_results_realtime(user_input)
+            except NameError:
+                # Fallback if you have not added the helper yet
+                search_results = fetch_search_results(user_input, user_settings)
+
+        # ---- Generate response ----
         bot_response = get_chat_response(user_input, search_results)
-        
+
+        # ---- TTS (keep as-is) ----
         text_to_speech(bot_response)
-        
+
+        # ---- Assistant message ----
         with st.chat_message("assistant"):
-            st.markdown(bot_response, unsafe_allow_html=True)
+            # OPT 2: Stream the bot response (typing effect)
+            placeholder = st.empty()
+            out = ""
+            for ch in bot_response:
+                out += ch
+                placeholder.markdown(out, unsafe_allow_html=True)
+                time.sleep(0.008)
+
             st.audio("output.mp3", format="audio/mpeg", loop=True)
             with st.expander("📚 References:", expanded=True):
                 st.markdown(search_results, unsafe_allow_html=True)
-        
-        st.session_state.messages.append({"role": "assistant", "content": f"{bot_response}\n\n{search_results}"})
+
+        st.session_state.messages.append(
+            {"role": "assistant", "content": f"{bot_response}\n\n{search_results}"}
+        )
 
 if __name__ == "__main__":
     run_app()
