@@ -7,7 +7,15 @@ import re
 from datetime import datetime
 from typing import Dict, List, Any, Optional
 from bs4 import BeautifulSoup
-from logger.app_logger import app_logger
+import logging
+
+app_logger = logging.getLogger("my-searchbot")
+if not app_logger.handlers:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s | %(levelname)s | %(name)s | %(levelname)s | %(message)s"
+    )
+
 
 # ============================ CHATBOT CLASS ============================
 
