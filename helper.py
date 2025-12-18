@@ -9,13 +9,32 @@ from typing import Dict, List, Any, Optional
 from bs4 import BeautifulSoup
 import logging
 
-app_logger = logging.getLogger("my-searchbot")
-if not app_logger.handlers:
+# Base logger configuration
+_base_logger = logging.getLogger("my-searchbot")
+if not _base_logger.handlers:
     logging.basicConfig(
         level=logging.INFO,
-        format="%(asctime)s | %(levelname)s | %(name)s | %(levelname)s | %(message)s"
+        format="%(asctime)s | %(levelname)s | %(message)s"
     )
 
+class AppLoggerAdapter:
+    def __init__(self, logger):
+        self._logger = logger
+
+    def log_info(self, msg, level="INFO"):
+        self._logger.info(msg)
+
+    def log_error(self, msg, level="ERROR"):
+        self._logger.error(msg)
+
+    def log_warning(self, msg, level="WARNING"):
+        self._logger.warning(msg)
+
+    def log_debug(self, msg, level="DEBUG"):
+        self._logger.debug(msg)
+
+# This preserves your original API
+app_logger = AppLoggerAdapter(_base_logger)
 
 # ============================ CHATBOT CLASS ============================
 
