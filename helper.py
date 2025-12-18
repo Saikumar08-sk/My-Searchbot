@@ -7,6 +7,21 @@ import re
 from datetime import datetime
 from typing import Dict, List, Any, Optional
 from bs4 import BeautifulSoup
+from openai import OpenAI
+
+client = OpenAI()
+
+def stream_llm(prompt: str):
+    stream = client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[{"role": "user", "content": prompt}],
+        stream=True
+    )
+    for event in stream:
+        delta = event.choices[0].delta
+        if delta and delta.content:
+            yield delta.content
+
 import logging
 
 # Base logger configuration
@@ -140,3 +155,8 @@ def log_search_query(query: str) -> None:
     log_entry = {"timestamp": timestamp, "query": query}
     save_json(log_entry, "search_logs.json")
     app_logger.log_info(f"Search query logged: {query}")
+
+def stream_answer(user_input: str, context: str):
+    prompt = f"User: {user_input}\n\nContext:\n{context}\n\nAnswer clearly:"
+    yield from stream_llm(prompt)
+
