@@ -210,7 +210,6 @@ def display_searchbot_intro():
 
 def run_app():
     """Run the Streamlit SearchBot app."""
-    import time
     import asyncio
     import inspect
 
@@ -234,47 +233,36 @@ def run_app():
     user_input = st.chat_input("Ask a question...")
 
     if user_input:
-        # User bubble
         st.chat_message("user").markdown(user_input)
         st.session_state.messages.append({"role": "user", "content": user_input})
 
-        # Fetch search results
+        # Fetch search results (and resolve coroutine)
         with st.spinner("Searching the web..."):
             search_results = fetch_search_results(user_input, user_settings)
             search_results = resolve_maybe_async(search_results)
 
         search_results_str = "" if search_results is None else str(search_results)
-
-        # Treat placeholder as empty (do not show it in UI or pass as meaningful context)
         if is_placeholder_no_results(search_results_str):
             search_results_str = ""
 
-        # Get bot response (safe function above)
-        bot_response = get_chat_response(user_input, search_results_str)
-
-        # TTS
-        text_to_speech(bot_response)
-
-        # Assistant bubble (stream)
+        # REAL-TIME STREAMING MESSAGE
         with st.chat_message("assistant"):
-            placeholder = st.empty()
-            out = ""
-            for ch in bot_response:
-                out += ch
-                placeholder.markdown(out, unsafe_allow_html=True)
-                time.sleep(0.008)
+            final_answer = st.write_stream(
+                ChatBot().stream_answer(user_input, search_results_str)
+            )
 
             st.audio("output.mp3", format="audio/mpeg", loop=True)
 
-            # Show references ONLY if real
             if search_results_str.strip():
                 with st.expander("📚 References:", expanded=True):
                     st.markdown(search_results_str, unsafe_allow_html=True)
 
-        st.session_state.messages.append(
-            {"role": "assistant", "content": f"{bot_response}\n\n{search_results_str}".strip()}
-        )
+        # TTS after we have final text
+        text_to_speech(final_answer)
 
+        st.session_state.messages.append(
+            {"role": "assistant", "content": f"{final_answer}\n\n{search_results_str}".strip()}
+        )
 if __name__ == "__main__":
     run_app()
 
