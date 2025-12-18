@@ -12,8 +12,16 @@ from openai import OpenAI
 
 
 # ============================ OPENAI CLIENT ============================
+OPENAI_API_KEY = "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"
+import os
+from openai import OpenAI
 
-client = OpenAI()  # uses OPENAI_API_KEY from environment
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+
+if not OPENAI_API_KEY:
+    raise RuntimeError("OPENAI_API_KEY is not set. Check Streamlit Secrets.")
+
+client = OpenAI(api_key=OPENAI_API_KEY)
 
 
 # ============================ LOGGER (Adapter to match your calls) ============================
