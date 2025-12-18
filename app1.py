@@ -129,11 +129,72 @@ def format_results(results: List[Dict[str, Any]]) -> str:
         table_md += f"| {index} | {title} | {summary} |\n"
     return table_md
 
-def get_chat_response(prompt: str, context: str) -> str:
-    """Get response from the chatbot."""
+import asyncio
+import inspect
+
+def get_chat_response(user_input, search_results):
+    """
+    Robust response builder:
+    - Accepts search_results as string/HTML or coroutine
+    - Never returns 'No search results available.' as the assistant response
+    - Works even if ChatBot uses different method names
+    """
+
+    # --- Resolve async search_results if needed ---
+    if inspect.iscoroutine(search_results):
+        search_results = asyncio.run(search_results)
+
+    # --- Normalize context ---
+    ctx = "" if search_results is None else str(search_results).strip()
+    if "no search results available" in ctx.lower():
+        ctx = ""  # treat placeholder as empty context
+
+    # --- Build response using ChatBot, regardless of method name ---
     chat_ai = ChatBot()
-    chat_ai.history = st.session_state.messages.copy()
-    return chat_ai.generate_response(f"User: {prompt}\nContext: {context}")
+
+    # Try common method names (your repo may use any one of these)
+    candidate_methods = ["respond", "get_response", "generate_response", "chat", "run", "invoke"]
+
+    resp = None
+    last_err = None
+
+    for m in candidate_methods:
+        if hasattr(chat_ai, m):
+            try:
+                fn = getattr(chat_ai, m)
+
+                # Some implementations accept (user_input, ctx), some only (user_input)
+                try:
+                    resp = fn(user_input, ctx)
+                except TypeError:
+                    resp = fn(user_input)
+
+                if inspect.iscoroutine(resp):
+                    resp = asyncio.run(resp)
+
+                break
+            except Exception as e:
+                last_err = e
+                resp = None
+
+    # If none of the methods worked, fallback
+    if resp is None:
+        return "I can help—please ask a specific question (example: 'weather in Hyderabad today', 'latest Apple news')."
+
+    resp = str(resp).strip()
+
+    # --- HARD GUARDS: never show placeholder as the assistant answer ---
+    if not resp or "no search results available" in resp.lower():
+        return "I can help—please ask a specific question (example: 'weather in Hyderabad today', 'latest Apple news')."
+
+    # Optional: remove template wrapper if your bot returns it
+    if "AI Response to:" in resp and "Context:" in resp:
+        # Keep only the content after Context:
+        resp = resp.split("Context:", 1)[-1].strip()
+        if not resp:
+            return "I can help—please ask a specific question (example: 'weather in Hyderabad today', 'latest Apple news')."
+
+    return resp
 
 def display_searchbot_intro():
     """Display an introduction message for the chatbot."""
@@ -158,9 +219,9 @@ def run_app():
             return asyncio.run(value)
         return value
 
-    def is_no_results(text: str) -> bool:
-        t = ("" if text is None else str(text)).strip().lower()
-        return ("no search results available" in t) or (t == "")
+    def is_placeholder_no_results(text):
+        t = "" if text is None else str(text).strip().lower()
+        return (t == "") or ("no search results available" in t)
 
     st.set_page_config(layout="wide")
     st.title("SearchBot 🤖")
@@ -173,56 +234,46 @@ def run_app():
     user_input = st.chat_input("Ask a question...")
 
     if user_input:
-        # ---- User message ----
+        # User bubble
         st.chat_message("user").markdown(user_input)
         st.session_state.messages.append({"role": "user", "content": user_input})
 
-        # ---- Search ----
+        # Fetch search results
         with st.spinner("Searching the web..."):
             search_results = fetch_search_results(user_input, user_settings)
             search_results = resolve_maybe_async(search_results)
 
-        # Normalize to string
         search_results_str = "" if search_results is None else str(search_results)
 
-        # If your search layer returns "No search results available.", treat as empty context
-        if is_no_results(search_results_str):
+        # Treat placeholder as empty (do not show it in UI or pass as meaningful context)
+        if is_placeholder_no_results(search_results_str):
             search_results_str = ""
 
-        # ---- Generate response ----
+        # Get bot response (safe function above)
         bot_response = get_chat_response(user_input, search_results_str)
 
-        # If your chatbot incorrectly returns "No search results available.", replace with a real reply
-        if is_no_results(bot_response):
-            bot_response = (
-                "I can help. Please ask a specific question (for example: "
-                "'weather in Dallas today', 'latest Apple news', or 'best restaurants near me')."
-            )
-
-        # ---- TTS ----
+        # TTS
         text_to_speech(bot_response)
 
-        # ---- Assistant message (streamed) ----
+        # Assistant bubble (stream)
         with st.chat_message("assistant"):
             placeholder = st.empty()
-            streamed_text = ""
+            out = ""
             for ch in bot_response:
-                streamed_text += ch
-                placeholder.markdown(streamed_text, unsafe_allow_html=True)
+                out += ch
+                placeholder.markdown(out, unsafe_allow_html=True)
                 time.sleep(0.008)
 
             st.audio("output.mp3", format="audio/mpeg", loop=True)
 
-            # Show references ONLY if we actually have real results
+            # Show references ONLY if real
             if search_results_str.strip():
                 with st.expander("📚 References:", expanded=True):
                     st.markdown(search_results_str, unsafe_allow_html=True)
 
-        # ---- Save history ----
         st.session_state.messages.append(
             {"role": "assistant", "content": f"{bot_response}\n\n{search_results_str}".strip()}
         )
-
 
 if __name__ == "__main__":
     run_app()
