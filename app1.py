@@ -6,6 +6,47 @@ from typing import Dict, List, Any
 import streamlit as st
 from gtts import gTTS
 from helper import ChatBot, current_year, invoke_duckduckgo_news_search
+import time
+import streamlit as st
+
+# ----------------------------
+# OPT 1: Real-time search + TTL cache
+# ----------------------------
+_SEARCH_CACHE = {}  # { query: (timestamp, results) }
+SEARCH_TTL_SEC = 60  # cache window (adjust 30–120 as needed)
+
+def get_search_results_realtime(query: str):
+    """Fetch fresh search results, but cache briefly to reduce repeated calls."""
+    q = (query or "").strip()
+    if not q:
+        return []
+
+    now = time.time()
+
+    if q in _SEARCH_CACHE:
+        ts, results = _SEARCH_CACHE[q]
+        if (now - ts) < SEARCH_TTL_SEC:
+            return results
+
+    # Use your existing search function
+    results = invoke_duckduckgo_news_search(q)
+
+    _SEARCH_CACHE[q] = (now, results)
+    return results
+
+
+# ----------------------------
+# OPT 2: Stream output (typing / incremental display)
+# ----------------------------
+def stream_markdown(text: str, delay: float = 0.008):
+    """Stream text to the UI for a 'real-time' typing effect."""
+    placeholder = st.empty()
+    out = ""
+    for ch in text:
+        out += ch
+        placeholder.markdown(out)
+        time.sleep(delay)
+    return out  # optional
 
 # ============================ UTILITY FUNCTIONS ============================
 
