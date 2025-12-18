@@ -152,12 +152,41 @@ def run_app():
     import time
     import asyncio
     import inspect
+    import re
 
     # Helper: resolve async/coroutine results into actual text
     def resolve_maybe_async(value):
         if inspect.iscoroutine(value):
             return asyncio.run(value)
         return value
+
+    # Helper: decide if we should do web/news search for this query
+    def should_search(q: str) -> bool:
+        q = (q or "").strip().lower()
+        if not q:
+            return False
+        # greetings / small-talk -> no search
+        smalltalk = {"hi", "hello", "hey", "hii", "hai", "thanks", "thank you", "good morning", "good night"}
+        if q in smalltalk:
+            return False
+        # very short prompts usually don't need search
+        if len(q.split()) <= 2:
+            return False
+        return True
+
+    # Helper: clean the template-like response if your model returns it
+    def clean_bot_response(text: str) -> str:
+        if not text:
+            return text
+        # Remove patterns like: "AI Response to: User: ... Context: ..."
+        # Keep anything after "Context:" if present, otherwise keep original.
+        if "AI Response to:" in text and "Context:" in text:
+            # If the model is echoing the template, remove the leading template
+            # and keep the actual answer part (often after Context or after a newline).
+            # First try to drop the "AI Response to: ... Context:" header.
+            cleaned = re.sub(r"^AI Response to:\s*User:.*?Context:\s*", "", text, flags=re.DOTALL).strip()
+            return cleaned if cleaned else text
+        return text
 
     st.set_page_config(layout="wide")
     st.title("SearchBot 🤖")
@@ -172,17 +201,25 @@ def run_app():
     if user_input:
         # ---- User message ----
         st.chat_message("user").markdown(user_input)
-        st.session_state.messages.append(
-            {"role": "user", "content": user_input}
-        )
+        st.session_state.messages.append({"role": "user", "content": user_input})
 
-        # ---- Real-time search (fix coroutine issue) ----
-        with st.spinner("Searching the web..."):
-            search_results = fetch_search_results(user_input, user_settings)
-            search_results = resolve_maybe_async(search_results)
+        # ---- Search (only when needed) ----
+        search_results = ""
+        if should_search(user_input):
+            with st.spinner("Searching the web..."):
+                sr = fetch_search_results(user_input, user_settings)
+                sr = resolve_maybe_async(sr)
+                sr = "" if sr is None else str(sr)
+
+                # If your fetch returns this literal string, treat as no context
+                if sr.strip().lower() == "no search results available.":
+                    sr = ""
+
+                search_results = sr
 
         # ---- Generate response ----
         bot_response = get_chat_response(user_input, search_results)
+        bot_response = clean_bot_response(bot_response)
 
         # ---- Text-to-speech ----
         text_to_speech(bot_response)
@@ -199,17 +236,15 @@ def run_app():
 
             st.audio("output.mp3", format="audio/mpeg", loop=True)
 
-            with st.expander("📚 References:", expanded=True):
-                st.markdown(str(search_results), unsafe_allow_html=True)
+            # Show references only if we actually have them
+            if search_results.strip():
+                with st.expander("📚 References:", expanded=True):
+                    st.markdown(search_results, unsafe_allow_html=True)
 
         # ---- Save assistant response to session ----
         st.session_state.messages.append(
-            {
-                "role": "assistant",
-                "content": f"{bot_response}\n\n{search_results}"
-            }
+            {"role": "assistant", "content": f"{bot_response}\n\n{search_results}".strip()}
         )
-
 
 if __name__ == "__main__":
     run_app()
