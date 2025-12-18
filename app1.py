@@ -8,6 +8,13 @@ from gtts import gTTS
 from helper import ChatBot, current_year, invoke_duckduckgo_news_search
 import time
 import streamlit as st
+import asyncio
+import inspect
+def resolve_maybe_async(value):
+    """If value is a coroutine, run it and return the real result."""
+    if inspect.iscoroutine(value):
+        return asyncio.run(value)
+    return value
 
 # ----------------------------
 # OPT 1: Real-time search + TTL cache
@@ -142,6 +149,16 @@ def display_searchbot_intro():
 
 def run_app():
     """Run the Streamlit SearchBot app."""
+    import time
+    import asyncio
+    import inspect
+
+    # Helper: resolve async/coroutine results into actual text
+    def resolve_maybe_async(value):
+        if inspect.iscoroutine(value):
+            return asyncio.run(value)
+        return value
+
     st.set_page_config(layout="wide")
     st.title("SearchBot 🤖")
     display_searchbot_intro()
@@ -155,15 +172,10 @@ def run_app():
         st.chat_message("user").markdown(user_input)
         st.session_state.messages.append({"role": "user", "content": user_input})
 
-        # ---- OPT 1: Real-time search (cached) ----
+        # ---- Real-time search (and FIX coroutine display) ----
         with st.spinner("Searching the web..."):
-            # If you already added get_search_results_realtime() (TTL cache),
-            # use it directly. Otherwise fallback to your existing function.
-            try:
-                search_results = get_search_results_realtime(user_input)
-            except NameError:
-                # Fallback if you have not added the helper yet
-                search_results = fetch_search_results(user_input, user_settings)
+            search_results = fetch_search_results(user_input, user_settings)
+            search_results = resolve_maybe_async(search_results)  # ✅ important
 
         # ---- Generate response ----
         bot_response = get_chat_response(user_input, search_results)
@@ -171,9 +183,8 @@ def run_app():
         # ---- TTS (keep as-is) ----
         text_to_speech(bot_response)
 
-        # ---- Assistant message ----
+        # ---- Assistant message (streamed) ----
         with st.chat_message("assistant"):
-            # OPT 2: Stream the bot response (typing effect)
             placeholder = st.empty()
             out = ""
             for ch in bot_response:
@@ -182,12 +193,16 @@ def run_app():
                 time.sleep(0.008)
 
             st.audio("output.mp3", format="audio/mpeg", loop=True)
-            with st.expander("📚 References:", expanded=True):
-                st.markdown(search_results, unsafe_allow_html=True)
 
+            with st.expander("📚 References:", expanded=True):
+                # search_results is now real text/html, not a coroutine
+                st.markdown(str(search_results), unsafe_allow_html=True)
+
+        # Store full assistant turn in history
         st.session_state.messages.append(
             {"role": "assistant", "content": f"{bot_response}\n\n{search_results}"}
         )
+)
 
 if __name__ == "__main__":
     run_app()
