@@ -1,30 +1,23 @@
 import os
 import json
-import asyncio
 import requests
-import urllib
+import urllib.parse
 import re
+import logging
 from datetime import datetime
 from typing import Dict, List, Any, Optional
+
 from bs4 import BeautifulSoup
 from openai import OpenAI
 
-client = OpenAI()
 
-def stream_llm(prompt: str):
-    stream = client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[{"role": "user", "content": prompt}],
-        stream=True
-    )
-    for event in stream:
-        delta = event.choices[0].delta
-        if delta and delta.content:
-            yield delta.content
+# ============================ OPENAI CLIENT ============================
 
-import logging
+client = OpenAI()  # uses OPENAI_API_KEY from environment
 
-# Base logger configuration
+
+# ============================ LOGGER (Adapter to match your calls) ============================
+
 _base_logger = logging.getLogger("my-searchbot")
 if not _base_logger.handlers:
     logging.basicConfig(
@@ -48,86 +41,208 @@ class AppLoggerAdapter:
     def log_debug(self, msg, level="DEBUG"):
         self._logger.debug(msg)
 
-# This preserves your original API
 app_logger = AppLoggerAdapter(_base_logger)
+
 
 # ============================ CHATBOT CLASS ============================
 
 class ChatBot:
     """
-    Chatbot class that interacts with a local AI model.
+    Chatbot class that interacts with OpenAI.
+    Provides BOTH:
+      - generate_response() -> full text (non-stream)
+      - stream_answer() -> generator for real-time streaming in Streamlit
     """
-    def __init__(self) -> None:
-        self.history: List[Dict[str, str]] = [{"role": "system", "content": "You are a helpful assistant."}]
+
+    def __init__(self, model: str = "gpt-4o-mini") -> None:
+        self.model = model
+        self.history: List[Dict[str, str]] = [
+            {"role": "system", "content": "You are a helpful assistant. Answer clearly and concisely."}
+        ]
         app_logger.log_info("ChatBot instance initialized", level="INFO")
 
-    def generate_response(self, prompt: str) -> str:
+    def _build_messages(self, user_input: str, context: str = "") -> List[Dict[str, str]]:
         """
-        Generate a response from the chatbot.
+        Build message list for OpenAI.
+        Context is inserted as an additional system message (so it guides the answer).
         """
-        self.history.append({"role": "user", "content": prompt})
-        app_logger.log_info("User prompt added to history", level="INFO")
-        
-        # Simulated AI response (replace with actual model call)
-        response = f"AI Response to: {prompt}"
-        self.history.append({"role": "assistant", "content": response})
-        app_logger.log_info("Assistant response generated", level="INFO")
-        return response
+        messages = list(self.history)
 
-# ============================ NEWS SEARCH FUNCTION ============================
+        ctx = (context or "").strip()
+        if ctx:
+            messages.append({
+                "role": "system",
+                "content": f"Use the following web context if it is relevant:\n\n{ctx}"
+            })
 
-async def invoke_duckduckgo_news_search(query: str, num: int = 5, location: str = "us-en", time_filter: str = "w") -> Dict[str, Any]:
-    """
-    Perform a DuckDuckGo News search.
-    """
-    app_logger.log_info(f"Starting news search for: {query}", level="INFO")
-    search_url = f"https://duckduckgo.com/html/?q={query.replace(' ', '+')}&kl={location}&df={time_filter}&ia=news"
-    headers = {"User-Agent": "Mozilla/5.0"}
-    
-    response = requests.get(search_url, headers=headers)
-    if response.status_code != 200:
-        app_logger.log_error("Failed to fetch news results.")
-        return {"status": "error", "message": "Failed to fetch news results"}
-    
-    soup = BeautifulSoup(response.text, "html.parser")
-    search_results = soup.find_all("div", class_="result__body")
-    
-    async def process_article(result, index: int) -> Optional[Dict[str, Any]]:
-        """Processes a single article."""
+        messages.append({"role": "user", "content": user_input})
+        return messages
+
+    def generate_response(self, user_input: str, context: str = "") -> str:
+        """
+        Non-stream response (returns full string).
+        """
         try:
+            app_logger.log_info("Generating non-stream response", level="INFO")
+
+            messages = self._build_messages(user_input, context)
+
+            resp = client.chat.completions.create(
+                model=self.model,
+                messages=messages,
+                temperature=0.4
+            )
+
+            text = resp.choices[0].message.content or ""
+            text = text.strip()
+
+            # Store in history
+            self.history.append({"role": "user", "content": user_input})
+            self.history.append({"role": "assistant", "content": text})
+
+            return text if text else "I can help—please ask a more specific question."
+
+        except Exception as e:
+            app_logger.log_error(f"OpenAI generate_response error: {e}")
+            return "I encountered an error while generating a response. Please try again."
+
+    def stream_answer(self, user_input: str, context: str = ""):
+        """
+        True real-time streaming generator (use with st.write_stream()).
+        Yields text chunks as the model produces them.
+        """
+        try:
+            app_logger.log_info("Streaming response started", level="INFO")
+
+            messages = self._build_messages(user_input, context)
+
+            stream = client.chat.completions.create(
+                model=self.model,
+                messages=messages,
+                temperature=0.4,
+                stream=True
+            )
+
+            collected = []
+
+            for event in stream:
+                delta = event.choices[0].delta
+                if delta and delta.content:
+                    chunk = delta.content
+                    collected.append(chunk)
+                    yield chunk
+
+            # Save final response to history (optional but useful)
+            final_text = "".join(collected).strip()
+            self.history.append({"role": "user", "content": user_input})
+            self.history.append({"role": "assistant", "content": final_text})
+
+        except Exception as e:
+            app_logger.log_error(f"OpenAI stream_answer error: {e}")
+            yield "I encountered an error while streaming the response. Please try again."
+
+
+# ============================ DUCKDUCKGO NEWS SEARCH (SYNC) ============================
+
+def invoke_duckduckgo_news_search(
+    query: str,
+    num: int = 5,
+    location: str = "us-en",
+    time_filter: str = "w"
+) -> Dict[str, Any]:
+    """
+    Synchronous DuckDuckGo News search.
+    Returns a dict:
+      {"status": "success", "results": [...]}
+      or {"status": "error", "message": "..."}
+    """
+    try:
+        q = (query or "").strip()
+        if not q:
+            return {"status": "error", "message": "Empty query"}
+
+        app_logger.log_info(f"Starting news search for: {q}", level="INFO")
+
+        search_url = (
+            f"https://duckduckgo.com/html/?q={urllib.parse.quote_plus(q)}"
+            f"&kl={location}&df={time_filter}&ia=news"
+        )
+
+        headers = {"User-Agent": "Mozilla/5.0"}
+        resp = requests.get(search_url, headers=headers, timeout=15)
+
+        if resp.status_code != 200:
+            app_logger.log_error(f"Failed to fetch news results. HTTP {resp.status_code}")
+            return {"status": "error", "message": "Failed to fetch news results"}
+
+        soup = BeautifulSoup(resp.text, "html.parser")
+        search_results = soup.find_all("div", class_="result__body")
+
+        results = []
+        for idx, result in enumerate(search_results[:num]):
             title_tag = result.find("a", class_="result__a")
             if not title_tag:
-                return None
-            title = title_tag.text.strip()
-            raw_link = title_tag["href"]
+                continue
+
+            title = title_tag.get_text(strip=True)
+            raw_link = title_tag.get("href", "")
+
+            # DuckDuckGo redirects often include "uddg="
             match = re.search(r"uddg=(https?%3A%2F%2F[^&]+)", raw_link)
-            link = urllib.parse.unquote(match.group(1)) if match else "Unknown Link"
+            link = urllib.parse.unquote(match.group(1)) if match else raw_link
+
             snippet = result.find("a", class_="result__snippet")
-            summary = snippet.text.strip() if snippet else "No summary available."
-            return {"num": index + 1, "link": link, "title": title, "summary": summary}
-        except Exception as e:
-            app_logger.log_error(f"Error processing article: {e}")
-            return None
-    
-    tasks = [process_article(result, index) for index, result in enumerate(search_results[:num])]
-    extracted_results = await asyncio.gather(*tasks)
-    extracted_results = [res for res in extracted_results if res is not None]
-    
-    if extracted_results:
-        app_logger.log_info(f"News search completed successfully with {len(extracted_results)} results", level="INFO")
-        return {"status": "success", "results": extracted_results}
-    else:
-        app_logger.log_error("No valid news search results found")
-        return {"status": "error", "message": "No valid news search results found"}
+            summary = snippet.get_text(strip=True) if snippet else "No summary available."
+
+            results.append({
+                "num": idx + 1,
+                "title": title,
+                "link": link,
+                "summary": summary
+            })
+
+        if results:
+            app_logger.log_info(f"News search completed: {len(results)} results", level="INFO")
+            return {"status": "success", "results": results}
+
+        return {"status": "error", "message": "No search results available."}
+
+    except Exception as e:
+        app_logger.log_error(f"DuckDuckGo news search error: {e}")
+        return {"status": "error", "message": "No search results available."}
+
+
+def format_news_results_html(search_payload: Dict[str, Any]) -> str:
+    """
+    Convert search results dict into HTML for Streamlit expander.
+    """
+    if not search_payload or search_payload.get("status") != "success":
+        return ""
+
+    items = search_payload.get("results", [])
+    if not items:
+        return ""
+
+    html = ["<div>"]
+    for item in items:
+        title = item.get("title", "Untitled")
+        link = item.get("link", "#")
+        summary = item.get("summary", "")
+        html.append(
+            f"<p><b>{item.get('num', '')}. "
+            f"<a href='{link}' target='_blank'>{title}</a></b><br/>"
+            f"{summary}</p>"
+        )
+    html.append("</div>")
+    return "\n".join(html)
+
 
 # ============================ UTILITY FUNCTIONS ============================
 
 def current_year() -> int:
-    """Returns the current year as an integer."""
     return datetime.now().year
 
 def save_json(data: Dict[str, Any], filename: str) -> None:
-    """Save a dictionary to a JSON file."""
     try:
         with open(filename, "w") as f:
             json.dump(data, f, indent=4)
@@ -136,7 +251,6 @@ def save_json(data: Dict[str, Any], filename: str) -> None:
         app_logger.log_error(f"Error saving JSON file: {e}")
 
 def load_json(filename: str) -> Optional[Dict[str, Any]]:
-    """Load a dictionary from a JSON file."""
     try:
         with open(filename, "r") as f:
             data = json.load(f)
@@ -150,13 +264,7 @@ def load_json(filename: str) -> Optional[Dict[str, Any]]:
         return None
 
 def log_search_query(query: str) -> None:
-    """Log user search queries for analysis."""
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     log_entry = {"timestamp": timestamp, "query": query}
     save_json(log_entry, "search_logs.json")
     app_logger.log_info(f"Search query logged: {query}")
-
-def stream_answer(user_input: str, context: str):
-    prompt = f"User: {user_input}\n\nContext:\n{context}\n\nAnswer clearly:"
-    yield from stream_llm(prompt)
-
