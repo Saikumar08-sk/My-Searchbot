@@ -167,42 +167,49 @@ def run_app():
     initialize_chat()
     show_chat_history()
 
-    if user_input := st.chat_input("Ask a question..."):
+    user_input = st.chat_input("Ask a question...")
+
+    if user_input:
         # ---- User message ----
         st.chat_message("user").markdown(user_input)
-        st.session_state.messages.append({"role": "user", "content": user_input})
+        st.session_state.messages.append(
+            {"role": "user", "content": user_input}
+        )
 
-        # ---- Real-time search (and FIX coroutine display) ----
+        # ---- Real-time search (fix coroutine issue) ----
         with st.spinner("Searching the web..."):
             search_results = fetch_search_results(user_input, user_settings)
-            search_results = resolve_maybe_async(search_results)  # ✅ important
+            search_results = resolve_maybe_async(search_results)
 
         # ---- Generate response ----
         bot_response = get_chat_response(user_input, search_results)
 
-        # ---- TTS (keep as-is) ----
+        # ---- Text-to-speech ----
         text_to_speech(bot_response)
 
-        # ---- Assistant message (streamed) ----
+        # ---- Assistant message (streamed output) ----
         with st.chat_message("assistant"):
             placeholder = st.empty()
-            out = ""
+            streamed_text = ""
+
             for ch in bot_response:
-                out += ch
-                placeholder.markdown(out, unsafe_allow_html=True)
+                streamed_text += ch
+                placeholder.markdown(streamed_text, unsafe_allow_html=True)
                 time.sleep(0.008)
 
             st.audio("output.mp3", format="audio/mpeg", loop=True)
 
             with st.expander("📚 References:", expanded=True):
-                # search_results is now real text/html, not a coroutine
                 st.markdown(str(search_results), unsafe_allow_html=True)
 
-        # Store full assistant turn in history
+        # ---- Save assistant response to session ----
         st.session_state.messages.append(
-            {"role": "assistant", "content": f"{bot_response}\n\n{search_results}"}
+            {
+                "role": "assistant",
+                "content": f"{bot_response}\n\n{search_results}"
+            }
         )
-)
+
 
 if __name__ == "__main__":
     run_app()
