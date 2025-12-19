@@ -1,33 +1,46 @@
-# app.py
 import os
 import streamlit as st
 
-from helper import (
-    ChatBot,
-    current_year,
-    invoke_duckduckgo_news_search,
-    format_news_results_html,
-)
+from helper import ChatBot, current_year
 
 # ----------------------------
-# Sidebar + UI helpers
+# UI helpers
 # ----------------------------
-def display_searchbot_intro():
-    st.caption(f"Live Search + Real-time AI Streaming • {current_year()}")
+def display_intro():
+    st.caption(f"SearchBot (Q&A + Memory + Answer Modes) • {current_year()}")
 
 def configure_sidebar() -> dict:
     st.sidebar.header("Settings")
-    num_results = st.sidebar.slider("News results", 1, 10, 5)
-    location = st.sidebar.selectbox("Region", ["us-en", "in-en", "uk-en", "ca-en"], index=0)
-    time_filter = st.sidebar.selectbox("Time filter", ["d", "w", "m", "y"], index=1)
-    show_refs = st.sidebar.checkbox("Show references", value=True)
-    enable_tts = st.sidebar.checkbox("Enable audio (TTS)", value=False)
+
+    mode = st.sidebar.selectbox(
+        "Answer mode",
+        ["Short", "Detailed", "Bullet points", "Explain like I'm 5", "Interview answer"],
+        index=0
+    )
+
+    memory_turns = st.sidebar.slider("Memory (last N messages)", 2, 20, 10)
+    enable_tts = st.sidebar.checkbox("Enable speech (TTS)", value=True)
+
+    st.sidebar.divider()
+    st.sidebar.subheader("Quick Questions")
+    quick = st.sidebar.radio(
+        "Pick one",
+        [
+            "Explain K-Means in simple terms.",
+            "What is the difference between Ridge and Lasso?",
+            "Give me interview answer: Why do you want this role?",
+            "Summarize overfitting vs underfitting.",
+        ],
+        index=0
+    )
+    ask_quick = st.sidebar.button("Ask selected question")
+
     return {
-        "num_results": num_results,
-        "location": location,
-        "time_filter": time_filter,
-        "show_refs": show_refs,
+        "mode": mode,
+        "memory_turns": memory_turns,
         "enable_tts": enable_tts,
+        "quick_question": quick,
+        "ask_quick": ask_quick,
     }
 
 def initialize_chat():
@@ -42,35 +55,15 @@ def show_chat_history():
             st.markdown(content, unsafe_allow_html=True)
 
 # ----------------------------
-# Search (SYNC) – no asyncio here
-# ----------------------------
-def fetch_search_results(user_input: str, user_settings: dict) -> str:
-    """
-    Returns HTML string for references. Never returns a coroutine.
-    If DuckDuckGo fails or returns no results, returns "".
-    """
-    payload = invoke_duckduckgo_news_search(
-        query=user_input,
-        num=int(user_settings.get("num_results", 5)),
-        location=user_settings.get("location", "us-en"),
-        time_filter=user_settings.get("time_filter", "w"),
-    )
-
-    if payload.get("status") != "success":
-        # Do NOT propagate placeholders into the UI or model context
-        return ""
-
-    return format_news_results_html(payload)
-
-# ----------------------------
-# TTS (optional, safe)
+# TTS (safe)
 # ----------------------------
 def text_to_speech(text: str, out_path: str = "output.mp3") -> bool:
     """
-    Optional TTS. If gTTS isn't installed or fails, return False safely.
+    Generates output.mp3 using gTTS if available.
+    Returns True if created successfully, else False.
     """
     try:
-        from gtts import gTTS  # requires gTTS in requirements.txt
+        from gtts import gTTS
         tts = gTTS(text=text)
         tts.save(out_path)
         return True
@@ -78,66 +71,68 @@ def text_to_speech(text: str, out_path: str = "output.mp3") -> bool:
         return False
 
 # ----------------------------
-# Main app
+# Memory helper
+# ----------------------------
+def get_memory_slice(messages, last_n: int):
+    """
+    Return last_n messages (user+assistant) for context.
+    """
+    if not messages:
+        return []
+    return messages[-last_n:]
+
+# ----------------------------
+# Main
 # ----------------------------
 def run_app():
     st.set_page_config(layout="wide", page_title="SearchBot")
     st.title("SearchBot 🤖")
-    display_searchbot_intro()
+    display_intro()
 
-    user_settings = configure_sidebar()
+    settings = configure_sidebar()
     initialize_chat()
     show_chat_history()
 
+    # If user clicks sidebar quick question, prefill it
+    prefill = settings["quick_question"] if settings["ask_quick"] else ""
+
     user_input = st.chat_input("Ask a question...")
+    if not user_input and prefill:
+        user_input = prefill
 
     if not user_input:
         return
 
-    # ---- User message
+    # --- Show user message + store
     st.chat_message("user").markdown(user_input)
     st.session_state.messages.append({"role": "user", "content": user_input})
 
-    # ---- Search (SYNC; returns HTML or "")
-    with st.spinner("Searching the web..."):
-        search_results_html = fetch_search_results(user_input, user_settings)
+    # --- Build memory slice for the model (A: conversation memory)
+    memory = get_memory_slice(st.session_state.messages, settings["memory_turns"])
 
-    # IMPORTANT: context passed to the LLM must be a STRING (not dict/coroutine)
-    context_for_llm = search_results_html or ""
-
-    # ---- Assistant (TRUE real-time streaming from OpenAI)
+    # --- Generate answer (B: answer modes)
     bot = ChatBot()
-    with st.chat_message("assistant"):
-        try:
-            final_answer = st.write_stream(
-                bot.stream_answer(user_input, context_for_llm)
-            )
-        except Exception:
-            # Fallback to non-stream if anything goes wrong
-            final_answer = bot.generate_response(user_input, context_for_llm)
-            st.markdown(final_answer, unsafe_allow_html=True)
+    answer = bot.generate_response(
+        user_input=user_input,
+        history=memory,
+        mode=settings["mode"],
+        extra_context=""  # keep empty (no search)
+    )
 
-        # ---- Audio (optional; never crash if file missing)
-        if user_settings.get("enable_tts"):
-            ok = text_to_speech(final_answer)
+    # --- Show assistant answer + store
+    with st.chat_message("assistant"):
+        st.markdown(answer, unsafe_allow_html=True)
+
+        # Speech
+        if settings["enable_tts"]:
+            ok = text_to_speech(answer, out_path="output.mp3")
             audio_path = "output.mp3"
             if ok and os.path.exists(audio_path) and os.path.getsize(audio_path) > 0:
                 st.audio(audio_path, format="audio/mpeg", loop=False)
             else:
                 st.caption("Audio not available.")
 
-        # ---- References (only if real)
-        if user_settings.get("show_refs") and search_results_html.strip():
-            with st.expander("📚 References", expanded=True):
-                st.markdown(search_results_html, unsafe_allow_html=True)
+    st.session_state.messages.append({"role": "assistant", "content": answer})
 
-    # ---- Save history
-    combined = final_answer
-    if search_results_html.strip():
-        combined = f"{final_answer}\n\n---\n\n{search_results_html}"
-    st.session_state.messages.append({"role": "assistant", "content": combined})
-
-
-# Streamlit runs the script top-to-bottom; this is still fine:
 if __name__ == "__main__":
     run_app()
