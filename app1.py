@@ -210,6 +210,7 @@ def display_searchbot_intro():
 
 def run_app():
     """Run the Streamlit SearchBot app."""
+    import os
     import asyncio
     import inspect
 
@@ -233,10 +234,11 @@ def run_app():
     user_input = st.chat_input("Ask a question...")
 
     if user_input:
+        # User message
         st.chat_message("user").markdown(user_input)
         st.session_state.messages.append({"role": "user", "content": user_input})
 
-        # Fetch search results (and resolve coroutine)
+        # Search
         with st.spinner("Searching the web..."):
             search_results = fetch_search_results(user_input, user_settings)
             search_results = resolve_maybe_async(search_results)
@@ -245,24 +247,35 @@ def run_app():
         if is_placeholder_no_results(search_results_str):
             search_results_str = ""
 
-        # REAL-TIME STREAMING MESSAGE
+        # Assistant (REAL-TIME STREAM)
         with st.chat_message("assistant"):
             final_answer = st.write_stream(
                 ChatBot().stream_answer(user_input, search_results_str)
             )
 
-            st.audio("output.mp3", format="audio/mpeg", loop=True)
+            # Generate TTS AFTER we have final_answer
+            try:
+                text_to_speech(final_answer)
+            except Exception:
+                pass
 
+            # ✅ SAFE AUDIO: only play if file exists + non-empty
+            audio_path = "output.mp3"
+            if os.path.exists(audio_path) and os.path.getsize(audio_path) > 0:
+                st.audio(audio_path, format="audio/mpeg", loop=True)
+            else:
+                st.caption("🔇 Audio not available for this response.")
+
+            # References (only if real)
             if search_results_str.strip():
                 with st.expander("📚 References:", expanded=True):
                     st.markdown(search_results_str, unsafe_allow_html=True)
 
-        # TTS after we have final text
-        text_to_speech(final_answer)
-
+        # Save history
         st.session_state.messages.append(
             {"role": "assistant", "content": f"{final_answer}\n\n{search_results_str}".strip()}
         )
+
 if __name__ == "__main__":
     run_app()
 
