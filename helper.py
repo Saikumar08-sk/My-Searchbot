@@ -112,36 +112,46 @@ class ChatBot:
             return "I encountered an error while generating a response."
 
     def stream_answer(self, user_input: str, context: str = ""):
-        """
-        TRUE real-time streaming generator.
-        Use with: st.write_stream(ChatBot().stream_answer(...))
-        """
-        try:
-            messages = self._build_messages(user_input, context)
+    """
+    True streaming when possible. If streaming fails, gracefully fallback to
+    non-stream generation and stream the final text in chunks.
+    """
+    try:
+        messages = self._build_messages(user_input, context)
 
-            stream = client.chat.completions.create(
-                model=self.model,
-                messages=messages,
-                temperature=0.4,
-                stream=True
-            )
+        stream = client.chat.completions.create(
+            model=self.model,
+            messages=messages,
+            temperature=0.4,
+            stream=True,
+        )
 
-            collected = []
+        collected = []
+        for event in stream:
+            delta = event.choices[0].delta
+            if delta and delta.content:
+                chunk = delta.content
+                collected.append(chunk)
+                yield chunk
 
-            for event in stream:
-                delta = event.choices[0].delta
-                if delta and delta.content:
-                    chunk = delta.content
-                    collected.append(chunk)
-                    yield chunk
+        final_text = "".join(collected).strip()
+        self.history.append({"role": "user", "content": user_input})
+        self.history.append({"role": "assistant", "content": final_text})
 
-            final_text = "".join(collected).strip()
-            self.history.append({"role": "user", "content": user_input})
-            self.history.append({"role": "assistant", "content": final_text})
+        # If streaming returned nothing, fallback
+        if not final_text:
+            raise RuntimeError("Streaming returned empty response")
 
-        except Exception as e:
-            app_logger.log_error(f"stream_answer error: {e}")
-            yield "I encountered an error while streaming the response."
+    except Exception as e:
+        # Log the real reason (visible in Streamlit Cloud logs)
+        app_logger.log_error(f"stream_answer failed, falling back to generate_response. Reason: {repr(e)}")
+
+        # Fallback to non-stream response (still gives user an answer)
+        fallback_text = self.generate_response(user_input, context) or "I can help—please try again."
+        # Stream the fallback text in chunks so UI still feels real-time
+        chunk_size = 16
+        for i in range(0, len(fallback_text), chunk_size):
+            yield fallback_text[i:i + chunk_size]
 
 
 # ============================ DUCKDUCKGO NEWS SEARCH ============================
