@@ -115,8 +115,7 @@ def run_app():
     answer = bot.generate_response(
         user_input=user_input,
         history=memory,
-        mode=settings["mode"],
-        extra_context=""  # keep empty (no search)
+        mode=settings["mode"]
     )
 
     # --- Show assistant answer + store
