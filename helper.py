@@ -1,17 +1,8 @@
 import os
-import json
-import requests
-import urllib.parse
-import re
 import logging
-from datetime import datetime
-from typing import Dict, List, Any, Optional
+from typing import List, Dict, Optional
 
-from bs4 import BeautifulSoup
-
-# ============================ OPENAI CLIENT (SAFE INIT) ============================
-
-# Try Streamlit secrets first (Cloud), then environment variables (local)
+# --- Load OpenAI key safely (Streamlit Cloud + local) ---
 try:
     import streamlit as st
     OPENAI_API_KEY = st.secrets.get("OPENAI_API_KEY", None)
@@ -23,23 +14,17 @@ if not OPENAI_API_KEY:
 
 if not OPENAI_API_KEY:
     raise RuntimeError(
-        "OPENAI_API_KEY is not set. "
-        "Add it in Streamlit Cloud → App → Settings → Secrets as:\n"
+        "OPENAI_API_KEY is not set. Add it in Streamlit Cloud → Settings → Secrets as:\n"
         "OPENAI_API_KEY = \"sk-...\""
     )
 
 from openai import OpenAI
 client = OpenAI(api_key=OPENAI_API_KEY)
 
-
-# ============================ LOGGER (Adapter – keeps your API) ============================
-
+# --- Logger (keeps your previous API shape) ---
 _base_logger = logging.getLogger("my-searchbot")
 if not _base_logger.handlers:
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s | %(levelname)s | %(message)s"
-    )
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
 
 class AppLoggerAdapter:
     def __init__(self, logger):
@@ -59,190 +44,81 @@ class AppLoggerAdapter:
 
 app_logger = AppLoggerAdapter(_base_logger)
 
+def current_year() -> int:
+    from datetime import datetime
+    return datetime.now().year
 
-# ============================ CHATBOT CLASS (REAL-TIME STREAMING) ============================
+# ----------------------------
+# Answer modes
+# ----------------------------
+MODE_INSTRUCTIONS = {
+    "Short": "Answer in 2–3 sentences. Be direct.",
+    "Detailed": "Give a detailed explanation with clear structure and helpful examples.",
+    "Bullet points": "Answer using bullet points. Keep them crisp and actionable.",
+    "Explain like I'm 5": "Use very simple words and a friendly analogy. Keep it short.",
+    "Interview answer": "Answer like a strong interview response: structured, confident, and practical."
+}
 
 class ChatBot:
     """
-    ChatBot using OpenAI with:
-    - generate_response(): normal full response
-    - stream_answer(): TRUE real-time streaming (token-by-token)
+    ChatBot that supports:
+    - Conversation memory (caller passes chat history)
+    - Answer modes (caller passes mode)
     """
 
-    def __init__(self, model: str = "gpt-4o-mini") -> None:
+    def __init__(self, model: str = "gpt-4o-mini"):
         self.model = model
-        self.history: List[Dict[str, str]] = [
-            {"role": "system", "content": "You are a helpful assistant. Answer clearly and concisely."}
-        ]
-        app_logger.log_info("ChatBot instance initialized")
+        app_logger.log_info("ChatBot initialized")
 
-    def _build_messages(self, user_input: str, context: str = "") -> List[Dict[str, str]]:
-        messages = list(self.history)
+    def _system_prompt(self, mode: str) -> str:
+        mode_inst = MODE_INSTRUCTIONS.get(mode, MODE_INSTRUCTIONS["Short"])
+        return (
+            "You are a helpful assistant.\n"
+            f"{mode_inst}\n"
+            "If the user’s question is unclear, ask one short clarifying question."
+        )
 
-        if context:
-            messages.append({
-                "role": "system",
-                "content": f"Use the following web context if relevant:\n\n{context}"
-            })
+    def generate_response(
+        self,
+        user_input: str,
+        history: Optional[List[Dict[str, str]]] = None,
+        mode: str = "Short",
+        extra_context: str = ""
+    ) -> str:
+        """
+        Generate a normal (non-streaming) response.
 
-        messages.append({"role": "user", "content": user_input})
-        return messages
-
-    def generate_response(self, user_input: str, context: str = "") -> str:
-        """Non-stream response (fallback)."""
+        history: list of {"role": "user"/"assistant", "content": "..."} from app session
+        mode: one of MODE_INSTRUCTIONS keys
+        extra_context: optional extra info (e.g., search snippets) as plain text
+        """
         try:
-            messages = self._build_messages(user_input, context)
+            messages: List[Dict[str, str]] = [{"role": "system", "content": self._system_prompt(mode)}]
+
+            # Add extra context as a system message (optional)
+            if extra_context:
+                messages.append({"role": "system", "content": f"Additional context:\n{extra_context}"})
+
+            # Add conversation history (optional)
+            if history:
+                for m in history:
+                    r = m.get("role")
+                    c = m.get("content", "")
+                    if r in ("user", "assistant") and c:
+                        messages.append({"role": r, "content": c})
+
+            # Add current user message
+            messages.append({"role": "user", "content": user_input})
 
             resp = client.chat.completions.create(
                 model=self.model,
                 messages=messages,
-                temperature=0.4
+                temperature=0.4,
             )
 
-            text = resp.choices[0].message.content or ""
-            text = text.strip()
-
-            self.history.append({"role": "user", "content": user_input})
-            self.history.append({"role": "assistant", "content": text})
-
+            text = (resp.choices[0].message.content or "").strip()
             return text if text else "I can help—please ask a more specific question."
 
         except Exception as e:
-            app_logger.log_error(f"generate_response error: {e}")
-            return "I encountered an error while generating a response."
-
-    def stream_answer(self, user_input: str, context: str = ""):
-    """
-    True streaming when possible. If streaming fails, gracefully fallback to
-    non-stream generation and stream the final text in chunks.
-    """
-    try:
-        messages = self._build_messages(user_input, context)
-
-        stream = client.chat.completions.create(
-            model=self.model,
-            messages=messages,
-            temperature=0.4,
-            stream=True,
-        )
-
-        collected = []
-        for event in stream:
-            delta = event.choices[0].delta
-            if delta and delta.content:
-                chunk = delta.content
-                collected.append(chunk)
-                yield chunk
-
-        final_text = "".join(collected).strip()
-        self.history.append({"role": "user", "content": user_input})
-        self.history.append({"role": "assistant", "content": final_text})
-
-        # If streaming returned nothing, fallback
-        if not final_text:
-            raise RuntimeError("Streaming returned empty response")
-
-    except Exception as e:
-        # Log the real reason (visible in Streamlit Cloud logs)
-        app_logger.log_error(f"stream_answer failed, falling back to generate_response. Reason: {repr(e)}")
-
-        # Fallback to non-stream response (still gives user an answer)
-        fallback_text = self.generate_response(user_input, context) or "I can help—please try again."
-        # Stream the fallback text in chunks so UI still feels real-time
-        chunk_size = 16
-        for i in range(0, len(fallback_text), chunk_size):
-            yield fallback_text[i:i + chunk_size]
-
-
-# ============================ DUCKDUCKGO NEWS SEARCH ============================
-
-def invoke_duckduckgo_news_search(
-    query: str,
-    num: int = 5,
-    location: str = "us-en",
-    time_filter: str = "w"
-) -> Dict[str, Any]:
-    """Synchronous DuckDuckGo News search."""
-    try:
-        q = (query or "").strip()
-        if not q:
-            return {"status": "error", "message": "Empty query"}
-
-        search_url = (
-            f"https://duckduckgo.com/html/?q={urllib.parse.quote_plus(q)}"
-            f"&kl={location}&df={time_filter}&ia=news"
-        )
-
-        headers = {"User-Agent": "Mozilla/5.0"}
-        resp = requests.get(search_url, headers=headers, timeout=15)
-
-        if resp.status_code != 200:
-            return {"status": "error", "message": "Failed to fetch news results"}
-
-        soup = BeautifulSoup(resp.text, "html.parser")
-        blocks = soup.find_all("div", class_="result__body")
-
-        results = []
-        for idx, block in enumerate(blocks[:num]):
-            title_tag = block.find("a", class_="result__a")
-            if not title_tag:
-                continue
-
-            title = title_tag.get_text(strip=True)
-            raw_link = title_tag.get("href", "")
-            match = re.search(r"uddg=(https?%3A%2F%2F[^&]+)", raw_link)
-            link = urllib.parse.unquote(match.group(1)) if match else raw_link
-
-            snippet = block.find("a", class_="result__snippet")
-            summary = snippet.get_text(strip=True) if snippet else "No summary available."
-
-            results.append({
-                "num": idx + 1,
-                "title": title,
-                "link": link,
-                "summary": summary
-            })
-
-        if results:
-            return {"status": "success", "results": results}
-
-        return {"status": "error", "message": "No search results available."}
-
-    except Exception as e:
-        app_logger.log_error(f"DuckDuckGo error: {e}")
-        return {"status": "error", "message": "No search results available."}
-
-
-def format_news_results_html(payload: Dict[str, Any]) -> str:
-    """Format news results as HTML for Streamlit."""
-    if not payload or payload.get("status") != "success":
-        return ""
-
-    html = []
-    for item in payload.get("results", []):
-        html.append(
-            f"<p><b>{item['num']}. "
-            f"<a href='{item['link']}' target='_blank'>{item['title']}</a></b><br/>"
-            f"{item['summary']}</p>"
-        )
-    return "\n".join(html)
-
-
-# ============================ UTILITIES ============================
-
-def current_year() -> int:
-    return datetime.now().year
-
-def save_json(data: Dict[str, Any], filename: str) -> None:
-    try:
-        with open(filename, "w") as f:
-            json.dump(data, f, indent=4)
-    except Exception as e:
-        app_logger.log_error(f"save_json error: {e}")
-
-def load_json(filename: str) -> Optional[Dict[str, Any]]:
-    try:
-        with open(filename, "r") as f:
-            return json.load(f)
-    except Exception:
-        return None
+            app_logger.log_error(f"generate_response error: {repr(e)}")
+            return "I encountered an error while generating the answer. Please try again."
